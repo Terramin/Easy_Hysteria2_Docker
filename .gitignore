@@ -1,0 +1,6 @@
+server.env
+users.txt
+*.crt
+*.key
+*.csr
+*.srl

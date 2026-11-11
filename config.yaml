@@ -1,0 +1,38 @@
+listen: :443
+
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+
+auth:
+  type: command
+  command: /etc/hysteria/auth.sh
+
+bandwidth:
+  up: 80 Mbps
+  down: 80 Mbps
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://yahoo.com/
+    rewriteHost: true
+
+congestion:
+  type: bbr
+  bbrProfile: conservative
+
+trafficStats:
+  listen: :9999
+  secret: "miepoa6xoonal4LaSahY0"
+
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  keepAlivePeriod: 10s
+  udpIdleTimeout: 60s
+  maxIncomingStreams: 512
+  disablePathMTUDiscovery: true
