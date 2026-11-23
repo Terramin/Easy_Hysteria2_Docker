@@ -17,7 +17,7 @@ Docker-образ [Hysteria 2](https://github.com/apernet/hysteria) с авто�
 - ACL: блокировка `.ru`/`.рф`/`.su`, GeoIP RU, GeoSite-категорий и отдельных CIDR
 - Protocol sniffing (HTTP/TLS/QUIC SNI) для корректной работы доменных правил ACL
 - BBR, bandwidth-лимиты, masquerade под HTTPS, Traffic Stats API на `:9999`
-- GeoIP/GeoSite базы запекаются в образ — интернет для их загрузки не нужен
+- GeoIP/GeoSite базы **не запекаются** в образ — контейнер скачивает их при старте
 
 ---
 
@@ -25,25 +25,27 @@ Docker-образ [Hysteria 2](https://github.com/apernet/hysteria) с авто�
 
 ```text
 Hysteria2/
-├── Dockerfile          # сборка образа
-├── config.yaml         # конфиг сервера
-├── entrypoint.sh       # докачка geo-баз, генерация сертификатов и запуск hysteria
-├── auth.sh             # command-auth: проверка users.txt
-├── hy2user             # CLI управления пользователями
-├── keygen.sh           # генерация клиентского URI
-├── geo_update.sh       # обновление geoip.dat / geosite.dat
-├── tune_network.sh     # оптимизация сети на хосте (BBR, sysctl)
-├── server.env          # SERVER_IP / SERVER_PORT (не попадает в образ)
-├── users.txt           # пользователи (не попадает в образ)
-├── geoip.dat           # база GeoIP (не попадает в образ, скачивается при старте)
-├── geosite.dat         # база GeoSite (не попадает в образ, скачивается при старте)
-├── .dockerignore
-├── .gitignore
-└── .gitattributes      # принудительные LF для скриптов и конфигов
+├── base/               # текущая реализация (Docker + bash) — весь рабочий проект
+│   ├── Dockerfile          # сборка образа
+│   ├── config.yaml         # конфиг сервера
+│   ├── entrypoint.sh       # докачка geo-баз, генерация сертификатов и запуск hysteria
+│   ├── auth.sh             # command-auth: проверка users.txt
+│   ├── hy2user             # CLI управления пользователями
+│   ├── keygen.sh           # генерация клиентского URI
+│   ├── geo_update.sh       # обновление geoip.dat / geosite.dat
+│   ├── tune_network.sh     # оптимизация сети на хосте (BBR, sysctl)
+│   ├── server.env          # SERVER_IP / SERVER_PORT (не попадает в образ)
+│   ├── users.txt           # пользователи (не попадает в образ)
+│   ├── geoip.dat           # база GeoIP (не попадает в образ, скачивается при старте)
+│   ├── geosite.dat         # база GeoSite (не попадает в образ, скачивается при старте)
+│   ├── .dockerignore
+│   ├── .gitignore
+│   └── .gitattributes      # принудительные LF для скриптов и конфигов
+└── rust/               # заготовка под будущую Rust-версию
 ```
 
-`.gitignore` и `.dockerignore` исключают `server.env`, `users.txt`, ключи/сертификаты, а также
-`geoip.dat`/`geosite.dat` — секреты, состояние пользователей и geo-базы не запекаются в образ.
+Все команды ниже выполняются из каталога `base/`. Сборка использует `base/.dockerignore`, поэтому
+`server.env`, `users.txt`, ключи/сертификаты и geo-базы не попадают в build context.
 При старте контейнера `entrypoint.sh` скачивает недостающие базы и только потом запускает Hysteria.
 
 ---
@@ -190,7 +192,7 @@ devuser1:iphusae2aigh7leem1ohshegh3oo
 Сборка из каталога с `Dockerfile`:
 
 ```bash
-cd "D:\Table\BackupFile\Sync\development\Docker Image\Hysteria2"
+cd "D:\Table\BackupFile\Sync\development\Docker Image\Hysteria2\base"
 docker build --no-cache -t hysteria2 .
 ```
 
