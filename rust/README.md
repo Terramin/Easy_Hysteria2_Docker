@@ -98,3 +98,9 @@ docker logs -f hysteria2-rust
 - Скачивание баз идёт через `ureq` (rustls), без вызова `curl`.
 - Логика percent-encoding, SNI и пользователей полностью на Rust.
 - Конфиг, порты и поведение фактически совпадают с `base/`.
+
+---
+
+## Лицензия
+
+GNU General Public License v3.0, полный текст в файле LICENSE в корне репозитория.
