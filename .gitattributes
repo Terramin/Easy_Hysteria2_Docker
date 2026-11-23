@@ -1,0 +1,17 @@
+# Единые переводы строк для всего репозитория (включая base/ и rust/)
+*.sh text eol=lf
+*.rs text eol=lf
+hy2user text eol=lf
+users.txt text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.env text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf
+Cargo.toml text eol=lf
+Cargo.lock text eol=lf
+.gitattributes text eol=lf
+.dockerignore text eol=lf
+.gitignore text eol=lf
+
+*.dat binary

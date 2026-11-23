@@ -1,0 +1,9 @@
+/target/
+/server.env
+/users.txt
+/geoip.dat
+/geosite.dat
+*.crt
+*.key
+*.csr
+*.srl
