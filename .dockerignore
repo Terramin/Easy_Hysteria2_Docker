@@ -2,6 +2,9 @@
 .gitignore
 server.env
 users.txt
+# Базы скачиваются контейнером при старте, в образе их нет
+geoip.dat
+geosite.dat
 *.crt
 *.key
 *.csr

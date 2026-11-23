@@ -1,0 +1,15 @@
+# Shell-скрипты и конфиги должны храниться с LF даже при работе из Windows
+*.sh text eol=lf
+hy2user text eol=lf
+users.txt text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.env text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf
+.gitattributes text eol=lf
+.dockerignore text eol=lf
+.gitignore text eol=lf
+
+# Бинарные базы GeoIP/GeoSite не трогаем
+*.dat binary

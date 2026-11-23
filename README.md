@@ -1,44 +1,73 @@
 # Hysteria 2 — Docker
 
-Docker-образ [Hysteria 2](https://github.com/apernet/hysteria) с автоматической генерацией сертификатов и управлением пользователями.
+Docker-образ [Hysteria 2](https://github.com/apernet/hysteria) с автоматической генерацией
+сертификатов, аутентификацией через `users.txt`, ACL на базе GeoIP/GeoSite и утилитами для
+управления пользователями и выдачи клиентских ссылок.
+
+Требуется Hysteria **2.14+** — в конфиге используется новый ACL-движок на выражениях (`acl.rules`).
+
+---
 
 ## Возможности
 
-- Автоматическая генерация самоподписанных сертификатов при старте
-- Авторизация через `users.txt` (command-based auth)
-- CLI-утилита `hy2user` для управления пользователями
-- BBR конгестийный контроль
-- Masquerade (маскировка под HTTPS)
-- Traffic Stats на порту 9999
+- Самоподписанный сертификат создаётся при каждом старте контейнера
+- Command-based авторизация: `users.txt` в формате `username:password`
+- `hy2user` — добавление/смена пароля/удаление/список пользователей
+- `keygen` — готовый клиентский URI `hysteria2://...` по имени пользователя
+- ACL: блокировка `.ru`/`.рф`/`.su`, GeoIP RU, GeoSite-категорий и отдельных CIDR
+- Protocol sniffing (HTTP/TLS/QUIC SNI) для корректной работы доменных правил ACL
+- BBR, bandwidth-лимиты, masquerade под HTTPS, Traffic Stats API на `:9999`
+- GeoIP/GeoSite базы запекаются в образ — интернет для их загрузки не нужен
+
+---
 
 ## Структура проекта
 
 ```text
 Hysteria2/
-├── Dockerfile
-├── config.yaml
-├── entrypoint.sh
-├── auth.sh
-├── hy2user
-├── tune_network.sh
-├── server.env
+├── Dockerfile          # сборка образа
+├── config.yaml         # конфиг сервера
+├── entrypoint.sh       # докачка geo-баз, генерация сертификатов и запуск hysteria
+├── auth.sh             # command-auth: проверка users.txt
+├── hy2user             # CLI управления пользователями
+├── keygen.sh           # генерация клиентского URI
+├── geo_update.sh       # обновление geoip.dat / geosite.dat
+├── tune_network.sh     # оптимизация сети на хосте (BBR, sysctl)
+├── server.env          # SERVER_IP / SERVER_PORT (не попадает в образ)
+├── users.txt           # пользователи (не попадает в образ)
+├── geoip.dat           # база GeoIP (не попадает в образ, скачивается при старте)
+├── geosite.dat         # база GeoSite (не попадает в образ, скачивается при старте)
+├── .dockerignore
 ├── .gitignore
-└── .dockerignore
+└── .gitattributes      # принудительные LF для скриптов и конфигов
 ```
+
+`.gitignore` и `.dockerignore` исключают `server.env`, `users.txt`, ключи/сертификаты, а также
+`geoip.dat`/`geosite.dat` — секреты, состояние пользователей и geo-базы не запекаются в образ.
+При старте контейнера `entrypoint.sh` скачивает недостающие базы и только потом запускает Hysteria.
 
 ---
 
-## 1. `server.env`
+## 1. Переменные окружения (`server.env`)
 
 ```bash
-SERVER_IP=ваш_IP_адрес
+SERVER_IP=<публичный_IP_адрес_сервера>
+# SERVER_PORT=443   # необязательно; если не задан, keygen использует 443
 ```
 
-Для изменения IP позже достаточно поменять это значение.
+- `SERVER_IP` обязателен: `entrypoint.sh` использует его для `CN` и `subjectAltName=IP:...`,
+  а `keygen` — как адрес подключения в клиентской ссылке.
+- `SERVER_PORT` нужен только `keygen`. Порт самого сервера задаётся в `config.yaml` (`listen: :443`).
+  Если публикуете другой порт, задайте `SERVER_PORT` и не забудьте `-p` в `docker run`.
+
+Файл передаётся через `--env-file server.env`, поэтому после смены IP/порта контейнер нужно
+пересоздать (см. [Обновление](#9-обновление-и-смена-ipпорта)).
 
 ---
 
 ## 2. `config.yaml`
+
+Рабочий конфиг (секрет замените своим):
 
 ```yaml
 listen: :443
@@ -58,7 +87,7 @@ bandwidth:
 masquerade:
   type: proxy
   proxy:
-    url: https://yahoo.com/
+    url: https://api.audio.com/
     rewriteHost: true
 
 congestion:
@@ -67,7 +96,16 @@ congestion:
 
 trafficStats:
   listen: :9999
-  secret: "miepoa6xoonal4LaSahY0"
+  secret: "REPLACE_WITH_YOUR_SECRET"
+
+sniff:
+  enable: true
+  timeout: 2s
+  rewriteDomain: false
+  tcpPorts: 80,443
+  udpPorts: 443
+
+udpIdleTimeout: 60s
 
 quic:
   initStreamReceiveWindow: 8388608
@@ -75,186 +113,109 @@ quic:
   initConnReceiveWindow: 20971520
   maxConnReceiveWindow: 20971520
   maxIdleTimeout: 30s
-  keepAlivePeriod: 10s
-  udpIdleTimeout: 60s
   maxIncomingStreams: 512
   disablePathMTUDiscovery: true
+
+outbounds:
+  - name: direct
+    type: direct
+
+acl:
+  geoip: /etc/hysteria/geoip.dat
+  geosite: /etc/hysteria/geosite.dat
+  rules:
+    - outbound: reject
+      match: suffix("ru") || suffix("xn--p1ai") || suffix("su")
+
+    - outbound: reject
+      match: geoip("ru") || geosite("category-ru")
+    - outbound: reject
+      match: geosite("yandex") || geosite("vk") || geosite("mailru")
+    - outbound: reject
+      match: geosite("sberbank") || geosite("tbank-ru") || suffix("vtb.ru") || suffix("vtb.com")
+    - outbound: reject
+      match: geosite("kinopoisk") || suffix("ivi.ru") || suffix("ivi.tv") || geosite("okko") || suffix("more.tv")
+
+    - outbound: reject
+      match: >-
+        suffix("max.ru") || suffix("rutube.ru") || suffix("vkplay.ru") ||
+        suffix("wink.ru") || suffix("premier.one") || suffix("start.ru") ||
+        suffix("amediateka.ru") || suffix("dzen.ru")
+
+    - outbound: reject
+      match: >-
+        cidr("158.160.96.0/20") || cidr("158.160.97.0/24") ||
+        cidr("158.160.98.0/24") || cidr("158.160.99.0/24") ||
+        cidr("158.160.100.0/22") || cidr("158.160.101.0/24") ||
+        cidr("158.160.102.0/24") || cidr("158.160.103.0/24") ||
+        cidr("158.160.104.0/24") || cidr("158.160.37.0/24") ||
+        cidr("158.160.57.0/24") || cidr("176.57.65.0/24")
+
+    - outbound: direct
 ```
+
+Важные детали ACL в Hysteria 2.14:
+
+- `acl.rules` с полем `match` — выражения на языке [expr](https://expr-lang.org/).
+- Встроенные outbound'ы: `direct`, `reject`, `default`; свои объявляются в `outbounds`.
+- `match: all` **невалиден**. Последнее правило пишется без `match` — оно означает «всё остальное».
+- Имена в `geosite(...)` должны существовать в `geosite.dat`, иначе сервер не стартует.
+  Проверить: `hysteria acl test -c config.yaml --no-resolve yandex.ru:443`.
+- `udpIdleTimeout` — поле верхнего уровня; внутри `quic` оно игнорируется. `keepAlivePeriod`
+  в Hysteria 2 не поддерживается.
+
+Первое правило `suffix("ru")` блокирует **все** `.ru`-домены, поэтому последующие правила для
+российских сервисов фактически не достигаются. Если это нежелательно — сузьте или уберите его.
 
 ---
 
-## 3. `entrypoint.sh`
+## 3. `users.txt`
 
-```bash
-#!/bin/bash
-set -e
-
-cd /etc/hysteria
-
-rm -f ca.crt server.crt server.csr extfile.cnf ca.srl
-
-if [ -z "$SERVER_IP" ]; then
-    echo "SERVER_IP is not set"
-    exit 1
-fi
-
-# Root CA
-openssl genrsa -out ca.key 2048
-
-openssl req -new -x509 -days 3650 \
-    -key ca.key \
-    -subj "/CN=Hysteria Root CA" \
-    -out ca.crt
-
-# Server key + CSR
-openssl req -newkey rsa:2048 -nodes \
-    -keyout server.key \
-    -subj "/CN=${SERVER_IP}" \
-    -out server.csr
-
-printf "subjectAltName=IP:${SERVER_IP}" > extfile.cnf
-
-# Подпись сертификата
-openssl x509 -req -days 3650 \
-    -in server.csr \
-    -CA ca.crt \
-    -CAkey ca.key \
-    -CAcreateserial \
-    -out server.crt \
-    -extfile extfile.cnf
-
-chmod 600 server.key ca.key
-
-# Создаём users.txt если его нет
-if [ ! -f /etc/hysteria/users.txt ]; then
-    cat > /etc/hysteria/users.txt << 'EOF'
+```text
 # username:password
 devuser1:iphusae2aigh7leem1ohshegh3oo
-EOF
-    chmod 600 /etc/hysteria/users.txt
-fi
-
-chmod +x /etc/hysteria/auth.sh
-
-exec hysteria server -c /etc/hysteria/config.yaml
 ```
+
+- Пароль не должен содержать `:` и пробелы; имя — только `[a-zA-Z0-9_-]`.
+- Имя пользователя сравнивается без учёта регистра.
+- Если `users.txt` отсутствует, `entrypoint.sh` создаст файл с пользователем `devuser1`.
+- Изменения применяются мгновенно, перезапуск не нужен.
+- Чтобы пользователи не терялись при пересоздании контейнера, монтируйте файл как volume
+  (см. ниже). Без volume при новом контейнере снова появится только `devuser1`.
 
 ---
 
-## 4. `auth.sh`
+## 4. Сборка образа
+
+Сборка из каталога с `Dockerfile`:
 
 ```bash
-#!/bin/bash
-# Вызывается Hysteria: auth.sh <addr> <auth> <tx>
-# auth приходит в формате "username:password"
-
-USERS_FILE="/etc/hysteria/users.txt"
-
-if [ $# -lt 2 ]; then
-    exit 1
-fi
-
-AUTH="$2"
-USERNAME="${AUTH%%:*}"
-PASSWORD="${AUTH#*:}"
-
-if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ] || [ "$USERNAME" = "$PASSWORD" ]; then
-    exit 1
-fi
-
-if [ ! -f "$USERS_FILE" ]; then
-    exit 1
-fi
-
-while IFS= read -r line || [ -n "$line" ]; do
-    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-
-    stored_user="${line%%:*}"
-    stored_pass="${line#*:}"
-
-    if [ "${stored_user,,}" = "${USERNAME,,}" ] && [ "$stored_pass" = "$PASSWORD" ]; then
-        echo "$stored_user"
-        exit 0
-    fi
-done < "$USERS_FILE"
-
-exit 1
+cd "D:\Table\BackupFile\Sync\development\Docker Image\Hysteria2"
+docker build --no-cache -t hysteria2 .
 ```
+
+Образ включает Hysteria 2 (последняя версия через `get.hy2.sh`), `bash`, `curl`, `openssl`,
+`ca-certificates` и все скрипты. **Баз GeoIP/GeoSite в образе нет** — `geoip.dat` и `geosite.dat`
+исключены через `.dockerignore` и скачиваются при каждом старте контейнера (см. раздел 12).
+Это делает образ меньше и позволяет получать свежие базы без пересборки.
+
+> Скрипты в образе принудительно переводятся в LF (`sed -i 's/\r$//'`), а `.gitattributes`
+> закрепляет `eol=lf`. Это защищает от ошибки `/bin/bash^M: bad interpreter` при правках в Windows.
 
 ---
 
-## 5. `Dockerfile`
+## 5. Запуск контейнера
 
-```dockerfile
-FROM debian:bookworm-slim
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    openssl \
-    ca-certificates \
-    bash \
-    && rm -rf /var/lib/apt/lists/*
-
-# Установка Hysteria 2
-RUN curl -fsSL https://get.hy2.sh | bash
-
-RUN mkdir -p /etc/hysteria
-
-WORKDIR /etc/hysteria
-
-COPY config.yaml /etc/hysteria/config.yaml
-COPY auth.sh /etc/hysteria/auth.sh
-COPY entrypoint.sh /entrypoint.sh
-COPY hy2user /usr/local/bin/hy2user
-
-RUN chmod +x /entrypoint.sh /etc/hysteria/auth.sh /usr/local/bin/hy2user
-
-EXPOSE 443/udp 9999/tcp
-
-ENTRYPOINT ["/entrypoint.sh"]
-```
-
----
-
-## 6. Исправление CRLF
-
-Если файлы создавались в Windows/WSL:
+Удалите старый контейнер, если он есть:
 
 ```bash
-sed -i 's/\r$//' entrypoint.sh auth.sh
+docker rm -f hysteria2
 ```
 
-Или:
+Базовый запуск:
 
 ```bash
-sudo apt install dos2unix
-dos2unix entrypoint.sh auth.sh
-```
-
----
-
-## 7. Сборка образа
-
-```bash
-sudo docker build --no-cache -t hysteria2 .
-```
-
----
-
-## 8. Удаление старого контейнера
-
-```bash
-sudo docker rm -f hysteria2
-```
-
----
-
-## 9. Запуск контейнера
-
-```bash
-sudo docker run -d \
+docker run -d \
   --name hysteria2 \
   --restart unless-stopped \
   --ulimit rtprio=99 \
@@ -266,10 +227,10 @@ sudo docker run -d \
   hysteria2
 ```
 
-С volume для `users.txt` (изменения сохраняются после пересборки):
+С сохранением пользователей на хосте:
 
 ```bash
-sudo docker run -d \
+docker run -d \
   --name hysteria2 \
   --restart unless-stopped \
   --ulimit rtprio=99 \
@@ -278,142 +239,202 @@ sudo docker run -d \
   --env-file server.env \
   -p 443:443/udp \
   -p 9999:9999/tcp \
-  -v $(pwd)/users.txt:/etc/hysteria/users.txt \
+  -v "$(pwd)/users.txt:/etc/hysteria/users.txt" \
   hysteria2
 ```
 
+Порты:
+
+- `443/udp` — основной порт Hysteria (`listen: :443` в конфиге)
+- `9999/tcp` — Traffic Stats API (секрет из `trafficStats.secret`)
+
+Если изменили `listen` в конфиге или задали `SERVER_PORT`, обновите и флаг `-p` в `docker run`.
+
 ---
 
-## 10. Управление пользователями
+## 6. Управление пользователями
 
-### Через `hy2user` (внутри контейнера)
+Внутри контейнера доступна утилита `hy2user`:
 
 ```bash
-# Добавить пользователя (пароль генерируется автоматически)
-docker exec -it hysteria2 hy2user add client1
-
-# Добавить с указанием пароля
-docker exec -it hysteria2 hy2user add client2 MyStrongPass123
-
-# Сменить пароль
-docker exec -it hysteria2 hy2user pass client1
-
-# Сменить на конкретный пароль
+docker exec -it hysteria2 hy2user add client1                 # пароль сгенерируется
+docker exec -it hysteria2 hy2user add client2 MyStrongPass123 # свой пароль
+docker exec -it hysteria2 hy2user pass client1                # новый пароль
 docker exec -it hysteria2 hy2user pass client1 NewPass456
-
-# Удалить пользователя
 docker exec -it hysteria2 hy2user del client2
-
-# Список всех пользователей
 docker exec -it hysteria2 hy2user list
+docker exec -it hysteria2 hy2user help
 ```
 
-### Через `users.txt` напрямую
-
-Изменения применяются **мгновенно**, перезапуск не нужен.
+Или прямо в `users.txt` на хосте (при смонтированном volume):
 
 ```bash
-# Добавить
 echo "newuser:SuperSecurePass123" >> users.txt
-
-# Сменить пароль
-sed -i 's/^user1:.*/user1:новый_пароль/' users.txt
-
-# Удалить
+sed -i 's/^user1:.*/user1:new_password/' users.txt
 sed -i '/^user3:/d' users.txt
-
-# Посмотреть всех
 cat users.txt
 ```
 
 ---
 
-## 11. Проверка работы
+## 7. Клиентский URI (`keygen.sh` / `keygen`)
+
+Скрипт печатает готовую ссылку для клиента по имени пользователя:
 
 ```bash
-# Статус контейнера
-sudo docker ps
+# внутри контейнера
+docker exec hysteria2 keygen devuser1
 
-# Логи
-sudo docker logs -f hysteria2
-
-# Порт UDP
-sudo ss -lunp | grep 443
-
-# Порты Docker
-sudo docker port hysteria2
+# на хосте, рядом с users.txt, server.env и config.yaml
+bash keygen.sh devuser1
 ```
 
-Ожидаемый вывод в логах:
+Откуда берутся значения:
+
+| Параметр | Источник |
+|---|---|
+| пользователь/пароль | `USERS_FILE`, иначе `/etc/hysteria/users.txt`, иначе `./users.txt` |
+| адрес `@IP` | всегда `SERVER_IP` из env (или из `server.env`) |
+| порт | всегда `SERVER_PORT` из env (или из `server.env`); по умолчанию **443** |
+| `sni` | хост из `masquerade.proxy.url` в `config.yaml`; при отсутствии — `SERVER_IP` |
+| переопределения | `SNI` (явный SNI), `CONFIG_FILE` (путь к конфигу) |
+
+Пример при `SERVER_IP=<IP>`, `SERVER_PORT` не задан и `url: https://api.audio.com/`:
+
+```text
+hysteria2://devuser1:iphusae2aigh7leem1ohshegh3oo@<IP>:443/?insecure=1&sni=api.audio.com#Hysteria2
+```
+
+Пароль и хост кодируются по RFC 3986 (кириллица → `%D0%BF...`), как в `hysteria share`.
+`insecure=1` обязателен: сертификат самоподписанный. Ссылка выводится в stdout, ошибки — в stderr.
+
+---
+
+## 8. Проверка работы
+
+```bash
+docker ps
+docker logs -f hysteria2
+docker port hysteria2
+ss -lunp | grep 443
+```
+
+Ожидаемые строки в логах:
 
 ```text
 server mode
-listening UDP on [::]:443
+server up and running   {"listen": ":443"}
+traffic stats server up and running   {"listen": ":9999"}
 ```
 
----
-
-## 12. Firewall (UFW)
+Проверка ACL без запуска сервера:
 
 ```bash
-sudo ufw allow 443/udp
-sudo ufw reload
-sudo ufw status
+hysteria acl test -c config.yaml --no-resolve yandex.ru:443
 ```
 
 ---
 
-## 13. Оптимизация сети
+## 9. Обновление и смена IP/порта
 
-На хосте выполнить:
+1. Отредактируйте `server.env` (`SERVER_IP`, при необходимости `SERVER_PORT`).
+2. Если меняли `config.yaml`, пересоберите образ: `docker build --no-cache -t hysteria2 .`
+3. Пересоздайте контейнер: `docker rm -f hysteria2` и заново `docker run ...`.
+4. Сертификаты генерируются заново при каждом старте — клиентские ссылки остаются валидными
+   благодаря `insecure=1`.
+
+---
+
+## 10. Диагностика: бесконечный перезапуск
+
+Контейнер с `--restart unless-stopped` перезапускается при любом выходе процесса. Основные причины:
+
+- **CRLF в `.sh`** → `/bin/bash^M: bad interpreter`. Лечится `sed -i 's/\r$//' ...`
+  (уже есть в `Dockerfile`) и `.gitattributes`.
+- **Неизвестный `geosite(...)`** → `GeoSite name ... not found`. Проверяйте имена по `geosite.dat`.
+- **`match: all`** → `expected bool, but got func(...)`. В 2.14 последнее правило без `match`.
+- **Не задан `SERVER_IP`** → `SERVER_IP is not set`.
+
+Посмотреть точную причину:
+
+```bash
+docker logs --tail 100 hysteria2
+```
+
+---
+
+## 11. Оптимизация сети на хосте
 
 ```bash
 sudo bash tune_network.sh
 ```
 
-Включает BBR и оптимизирует параметры сети.
+Скрипт включает BBR, `fq` qdisc, увеличивает буферы `rmem_max`/`wmem_max` и добавляет
+параметры в `/etc/sysctl.conf` (идемпотентно). Требует `sudo`.
 
 ---
 
-## 14. Пример клиентского URI
+## 12. Обновление GeoIP/GeoSite
 
-```text
-hysteria2://user1:пароль@ВАШ_IP:443/?insecure=1&sni=ВАШ_IP#Hysteria2
-```
+Скрипт скачивает свежие `geoip.dat` и `geosite.dat` из
+[Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat) (формат совместим
+с Hysteria 2), проверяет размер и protobuf-заголовок, сохраняет старые файлы как `.bak` и
+атомарно заменяет исходные.
 
-> `%23` = `#` в URL-кодировке. `insecure=1` обязателен для self-signed сертификата.
+**В образе баз нет:** `entrypoint.sh` при каждом старте проверяет наличие `/etc/hysteria/geoip.dat`
+и `/etc/hysteria/geosite.dat` и скачивает недостающие **до** генерации сертификатов и запуска
+Hysteria. Если скачать не удалось, контейнер завершается с ошибкой и не поднимает «полуработающий»
+сервер. Вручную обновлять базы нужно только для принудительного обновления без перезапуска.
 
----
+Источники опрашиваются по очереди, пока один не сработает:
 
-## 15. Смена IP сервера
-
-1. Отредактируйте `server.env`
-2. Перезапустите контейнер:
+1. `https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/<file>`
+2. `https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/<file>` — дополнительный CDN-зеркало
 
 ```bash
-sudo docker restart hysteria2
+# На хосте — обновляет файлы рядом со скриптом
+bash geo_update.sh
+
+# Только одна база
+bash geo_update.sh geoip
+bash geo_update.sh geosite
+
+# Внутри контейнера (установлен как /usr/local/bin/geo-update, пишет в /etc/hysteria)
+docker exec hysteria2 geo-update
 ```
 
----
+Переменные окружения: `GEO_DIR` (каталог назначения), `GEO_BASE_URL`, `GEO_CDN_BASE`,
+`GEOIP_URL` и `GEOSITE_URL` (полные URL; можно задать несколько через запятую — они будут
+опрашиваться в указанном порядке).
 
-## 16. Полезные команды
+Hysteria загружает базы только при старте, поэтому после обновления перезапустите контейнер:
 
 ```bash
-# Логи
-sudo docker logs -f hysteria2
+docker restart hysteria2
+```
 
-# Войти внутрь контейнера
-sudo docker exec -it hysteria2 bash
+Пересобирать образ из-за обновления баз больше не нужно — они скачиваются заново при каждом старте
+контейнера. `.dockerignore` гарантирует, что локальные `geoip.dat`/`geosite.dat` не попадут в образ.
 
-# Остановить / Запустить / Перезапустить
-sudo docker stop hysteria2
-sudo docker start hysteria2
-sudo docker restart hysteria2
+---
+
+## 13. Полезные команды
+
+```bash
+docker logs -f hysteria2              # логи
+docker exec -it hysteria2 bash        # войти в контейнер
+docker stop hysteria2                 # остановить
+docker start hysteria2                # запустить
+docker restart hysteria2              # перезапустить
+docker exec hysteria2 keygen devuser1 # клиентская ссылка
+docker exec hysteria2 geo-update      # обновить geoip/geosite внутри контейнера
 ```
 
 ---
 
-## Порт
+## Примечания по безопасности
 
-- **443/udp** — основной порт Hysteria 2
-- **9999/tcp** — traffic stats (опционально)
+- Замените секрет `trafficStats.secret` и сгенерированные пароли на свои.
+- `server.env`, `users.txt` и ключи исключены из Git и образа; не коммитьте их.
+- `insecure=1` отключает проверку сертификата — используйте только с доверенным сервером.
+- Traffic Stats API слушает на `:9999`; при необходимости ограничьте доступ файрволом.

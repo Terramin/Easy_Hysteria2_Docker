@@ -15,7 +15,7 @@ bandwidth:
 masquerade:
   type: proxy
   proxy:
-    url: https://yahoo.com/
+    url: https://api.audio.com/
     rewriteHost: true
 
 congestion:
@@ -26,13 +26,64 @@ trafficStats:
   listen: :9999
   secret: "miepoa6xoonal4LaSahY0"
 
+sniff:
+  enable: true
+  timeout: 2s
+  rewriteDomain: false
+  tcpPorts: 80,443
+  udpPorts: 443
+
+# udpIdleTimeout — поле верхнего уровня (внутри quic оно игнорируется)
+udpIdleTimeout: 60s
+
 quic:
   initStreamReceiveWindow: 8388608
   maxStreamReceiveWindow: 8388608
   initConnReceiveWindow: 20971520
   maxConnReceiveWindow: 20971520
   maxIdleTimeout: 30s
-  keepAlivePeriod: 10s
-  udpIdleTimeout: 60s
+  # keepAlivePeriod в Hysteria 2 не поддерживается — удалён
   maxIncomingStreams: 512
   disablePathMTUDiscovery: true
+
+# Явно описываем исходящие подключения, чтобы ACL мог на них ссылаться.
+# direct — встроенный outbound, ссылаться на него по имени "direct".
+outbounds:
+  - name: direct
+    type: direct
+
+acl:
+  geoip: /etc/hysteria/geoip.dat
+  geosite: /etc/hysteria/geosite.dat
+  rules:
+    - outbound: reject
+      match: suffix("ru") || suffix("xn--p1ai") || suffix("su")
+
+    - outbound: reject
+      match: geoip("ru") || geosite("category-ru")
+    - outbound: reject
+      match: geosite("yandex") || geosite("vk") || geosite("mailru")
+    # В geosite.dat нет категорий tinkoff/vtb — используем реальные имена/домены
+    - outbound: reject
+      match: geosite("sberbank") || geosite("tbank-ru") || suffix("vtb.ru") || suffix("vtb.com")
+    # Категорий ivi/more тоже нет — задаём домены явно
+    - outbound: reject
+      match: geosite("kinopoisk") || suffix("ivi.ru") || suffix("ivi.tv") || geosite("okko") || suffix("more.tv")
+
+    - outbound: reject
+      match: >-
+        suffix("max.ru") || suffix("rutube.ru") || suffix("vkplay.ru") ||
+        suffix("wink.ru") || suffix("premier.one") || suffix("start.ru") ||
+        suffix("amediateka.ru") || suffix("dzen.ru")
+
+    - outbound: reject
+      match: >-
+        cidr("158.160.96.0/20") || cidr("158.160.97.0/24") ||
+        cidr("158.160.98.0/24") || cidr("158.160.99.0/24") ||
+        cidr("158.160.100.0/22") || cidr("158.160.101.0/24") ||
+        cidr("158.160.102.0/24") || cidr("158.160.103.0/24") ||
+        cidr("158.160.104.0/24") || cidr("158.160.37.0/24") ||
+        cidr("158.160.57.0/24") || cidr("176.57.65.0/24")
+
+    # Правило без match — почти всё остальное (в v2.14 `match: all` невалидно)
+    - outbound: direct

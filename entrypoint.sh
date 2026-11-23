@@ -3,6 +3,23 @@ set -e
 
 cd /etc/hysteria
 
+# Базы GeoIP/GeoSite не запечены в образ: скачиваем недостающие ДО старта сервера.
+# Hysteria читает их при запуске, поэтому это необходимо сделать до exec hysteria.
+if [ -x /usr/local/bin/geo-update ]; then
+    for db in geoip geosite; do
+        if [ ! -s "/etc/hysteria/${db}.dat" ]; then
+            echo "База ${db}.dat не найдена — скачиваем..."
+            if ! /usr/local/bin/geo-update "$db"; then
+                echo "Не удалось получить ${db}.dat, запуск прерван" >&2
+                exit 1
+            fi
+        fi
+    done
+else
+    echo "Ошибка: /usr/local/bin/geo-update не найден в образе" >&2
+    exit 1
+fi
+
 # Генерация сертификатов (оставляем как было)
 rm -f ca.crt server.crt server.csr extfile.cnf ca.srl
 
